@@ -20,7 +20,15 @@ jobs:
           python-version: "3.11"
           cache: pip
 
-      - run: pip install -e ".[dev]"
+      # The default torch wheel is the CUDA build: it drags in cuda-toolkit,
+      # cublas, cudnn, cufft, cusolver, cusparse, nccl, nvshmem and triton,
+      # gigabytes of it, on a runner with no GPU. Stage A is CPU-viable by
+      # design, so torch comes from the CPU index first and the line below then
+      # finds it already satisfied rather than re-resolving it.
+      - name: Install torch (CPU build, no CUDA stack)
+        run: pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+      - run: pip install -e ".[dev,fit]"
 
       - name: Lint
         run: ruff check src tests

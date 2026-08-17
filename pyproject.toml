@@ -19,6 +19,18 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# torch is an extra rather than a dependency because nothing outside the fit
+# needs it, and it is a few hundred megabytes on every install that does not.
+# CI installs ".[dev,fit]" anyway: the fit is the most numerically delicate code
+# in this repo and leaving it untypechecked to save install time is the wrong
+# saving. Pip caching absorbs most of the cost.
+# Install this from the CPU index or pip resolves the CUDA build and pulls
+# gigabytes of nvidia packages onto a machine that will not use them:
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
+#   pip install -e ".[dev,fit]"
+fit = [
+  "torch>=2.4",
+]
 dev = [
   "pytest>=8.3",
   "pytest-cov>=5.0",
