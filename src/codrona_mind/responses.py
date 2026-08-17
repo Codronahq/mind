@@ -15,6 +15,16 @@ produced by an older code path, and every test in both repos would stay green.
 So `lens` writes a sidecar manifest beside the artefact and this module reads
 it, which makes the artefact directory self-describing.
 
+REFUSAL IS ON THE READ PATH, NOT ONLY IN THE COMMAND. Until 17 Aug 2026 the
+first line of this docstring claimed a refusal the module did not implement.
+`verify_artefact` and `verify_partition` returned lists of strings, `main`
+turned a non-empty list into an exit code, and `load_bank` - the path a fit
+actually takes - read the parquet without opening the manifest at all. A
+verification you have to remember to run is not a gate, which is precisely the
+defect `compare_manifest` carried in `lens` one repo over. `load_bank` now
+verifies by default and raises `StaleArtefactError`. The check is a footer read
+and a JSON parse, so there is no cost worth saving by skipping it.
+
 WHAT IS CHECKED, AND WHAT IS NOT. Row count and column names and order come from
 the parquet footer, so verification is metadata-only and costs nothing. Column
 TYPES are deliberately not compared: the manifest records DuckDB type names
@@ -55,6 +65,10 @@ DEFAULT_CUTOFF = "2026-01-01"
 
 BANK_COLUMN = "in_public_problemset"
 SPLIT_COLUMNS = ("user_key", "problem_key", "submitted_at", BANK_COLUMN)
+
+
+class StaleArtefactError(RuntimeError):
+    """The parquet on disk is not the one the sidecar manifest describes."""
 
 
 def default_artefact() -> pathlib.Path:
@@ -117,13 +131,32 @@ def verify_artefact(artefact: pathlib.Path, manifest: dict[str, Any]) -> list[st
     return problems
 
 
-def load_bank(artefact: pathlib.Path, columns: tuple[str, ...] | None = None) -> pa.Table:
+def load_bank(
+    artefact: pathlib.Path,
+    columns: tuple[str, ...] | None = None,
+    *,
+    verify: bool = True,
+) -> pa.Table:
     """The item bank: responses on problems in the public problemset.
 
     Stage A fits this and not the full matrix. `in_public_problemset` is carried
     as a column rather than baked in, so the filter happens where it is decided
     - which is here.
+
+    Verification is ON by default because this is the read path a fit takes, and
+    a check that only runs when someone remembers to invoke a command gates
+    nothing. A caller wanting the rows without it passes `verify=False` and says
+    so at the call site; no production path in this repo does.
     """
+    if verify:
+        problems = verify_artefact(artefact, load_manifest(artefact))
+        if problems:
+            raise StaleArtefactError(
+                f"{artefact} disagrees with the manifest beside it: "
+                + "; ".join(problems)
+                + ". Regenerate it in lens: "
+                "python3 -m codrona_lens.responses.matrix --real-data"
+            )
     wanted = list(columns) if columns else None
     if wanted is not None and BANK_COLUMN not in wanted:
         wanted = [*wanted, BANK_COLUMN]
@@ -241,6 +274,14 @@ def main(argv: list[str] | None = None) -> int:
     artefact = args.artefact or default_artefact()
     if not artefact.exists():
         print(f"no artefact at {artefact} - nothing verified")
+        if args.verify:
+            print(
+                f"--verify asked for a verification and there is nothing at "
+                f"{artefact} to verify. Build it in lens: "
+                "python3 -m codrona_lens.responses.matrix --real-data",
+                file=sys.stderr,
+            )
+            return 1
         return 0
     manifest = load_manifest(artefact)
 

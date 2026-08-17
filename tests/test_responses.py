@@ -171,6 +171,54 @@ def test_the_bank_filter_drops_out_of_bank_rows(tmp_path: pathlib.Path) -> None:
     assert "700G" not in bank.column("problem_key").to_pylist()
 
 
+@pytest.mark.parametrize(
+    ("overrides", "expected"),
+    [
+        ({"counts": {"merged_responses": 99}}, "artefact rows"),
+        ({"schema": [{"name": "user_key", "type": "X"}]}, "absent from manifest"),
+        (
+            {
+                "schema": [
+                    {"name": n, "type": "X"}
+                    for n in ["problem_key", "user_key", "submitted_at", "in_public_problemset"]
+                ]
+            },
+            "column ORDER differs",
+        ),
+    ],
+)
+def test_the_read_path_refuses_a_stale_artefact(
+    tmp_path: pathlib.Path, overrides: dict[str, Any], expected: str
+) -> None:
+    """A fit reads through `load_bank`, so `load_bank` is where refusal has to live.
+
+    Until 17 Aug 2026 every one of these returned a table of rows. The
+    verification existed and ran only when the CLI was invoked, which is the
+    same shape as a gate watching a label instead of the behaviour.
+    """
+    artefact = _artefact(tmp_path, **overrides)
+    with pytest.raises(responses.StaleArtefactError) as caught:
+        responses.load_bank(artefact, responses.SPLIT_COLUMNS)
+    assert expected in str(caught.value)
+
+
+def test_the_read_path_refuses_when_the_sidecar_is_gone(tmp_path: pathlib.Path) -> None:
+    """A missing manifest is not an absent check, it is an unverifiable artefact."""
+    artefact = _artefact(tmp_path)
+    responses.sidecar_manifest(artefact).unlink()
+    with pytest.raises(FileNotFoundError):
+        responses.load_bank(artefact, responses.SPLIT_COLUMNS)
+
+
+def test_the_escape_hatch_reads_without_verifying(tmp_path: pathlib.Path) -> None:
+    """The hatch is explicit and real. Both branches run on the same bad artefact."""
+    artefact = _artefact(tmp_path, counts={"merged_responses": 99})
+    with pytest.raises(responses.StaleArtefactError):
+        responses.load_bank(artefact, responses.SPLIT_COLUMNS)
+    bank = responses.load_bank(artefact, responses.SPLIT_COLUMNS, verify=False)
+    assert bank.num_rows == len(ROWS) - 1
+
+
 def test_the_partition_classifies_each_held_out_response(
     tmp_path: pathlib.Path,
 ) -> None:
@@ -293,3 +341,13 @@ def test_the_cli_skips_loudly_without_an_artefact(
     """A machine that never built one is not a failing machine."""
     assert responses.main(["--artefact", str(tmp_path / "gone.parquet")]) == 0
     assert "nothing verified" in capsys.readouterr().out
+
+
+def test_the_cli_fails_when_verify_is_asked_of_a_missing_artefact(
+    tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Skipping is right by default and wrong once a verification was requested."""
+    missing = tmp_path / "gone.parquet"
+    assert responses.main(["--artefact", str(missing)]) == 0
+    assert responses.main(["--artefact", str(missing), "--verify"]) == 1
+    assert "nothing at" in capsys.readouterr().err
