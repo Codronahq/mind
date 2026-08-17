@@ -1,3 +1,24 @@
+# Local system hooks, not remote `rev:` pins.
+#
+# A pinned hook installs its own copy of ruff and mypy, so the versions that run
+# here and the versions CI installs from pyproject.toml are different binaries by
+# construction. This file previously pinned ruff v0.16.1 and mypy v2.3.0 against
+# declared ranges of >=0.6 and >=1.11, and a mypy major-version gap can reject
+# code that the venv's own `mypy src tests` just passed. Pointing `entry` at
+# .venv/bin means the hook and CI run the identical binary, drift cannot occur,
+# and there is no hook virtualenv to build.
+#
+# mypy takes `pass_filenames: false` with an explicit tree, because the commit
+# hook otherwise scopes it to changed files: replacing one module can then break
+# an untouched importer and still commit clean. `pre-commit run --all-files` and
+# the commit hook are then the same gate rather than two.
+#
+# `pyproject` is in every types_or list because that file holds the dependency
+# pins and the ruff, mypy and pytest configuration - the one file where "no
+# Python changed" is least true, and which `types_or: [python]` alone skips.
+#
+# Requires a populated .venv: `python3.11 -m venv .venv && .venv/bin/pip install
+# -e ".[dev]"`. That is the environment CI builds, which is the point.
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0
@@ -9,15 +30,33 @@ repos:
         args: ["--maxkb=5120"]
       - id: check-merge-conflict
 
-  - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.16.1
+  - repo: local
     hooks:
       - id: ruff
-        args: [--fix]
-      - id: ruff-format
+        name: ruff check
+        entry: .venv/bin/ruff
+        args: [check, --fix]
+        language: system
+        types_or: [python, pyi]
 
-  - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v2.3.0
-    hooks:
+      - id: ruff-format
+        name: ruff format
+        entry: .venv/bin/ruff
+        args: [format]
+        language: system
+        types_or: [python, pyi]
+
       - id: mypy
-        additional_dependencies: [pydantic, types-requests]
+        name: mypy (src tests)
+        entry: .venv/bin/mypy
+        args: [src, tests]
+        language: system
+        types_or: [python, pyi, pyproject]
+        pass_filenames: false
+
+      - id: pytest
+        name: pytest
+        entry: .venv/bin/pytest
+        language: system
+        types_or: [python, pyi, pyproject]
+        pass_filenames: false
